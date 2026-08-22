@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.0.1 - 2026-08-23
 
 - Linked the original OVID player as a complete usage example.
 - Added executable host tests for drawing, clipping, scrolling, buffering, controller modes, DMA failures, and the STM32 HAL adapter.
