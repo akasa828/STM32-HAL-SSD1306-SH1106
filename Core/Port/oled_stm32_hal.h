@@ -17,6 +17,7 @@ typedef struct {
     uint32_t (*clock_hz)(void *user_context);
     uint32_t (*error_count)(void *user_context);
     uint32_t (*timeout_count)(void *user_context);
+    uint8_t transfer_active;
 } OLED_STM32_HAL;
 
 int OLED_STM32_HAL_Attach(OLED_STM32_HAL *adapter);

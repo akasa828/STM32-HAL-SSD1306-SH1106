@@ -95,14 +95,64 @@ const uint8_t DATA = 0x40; //数据命令
 
 volatile uint8_t OLED_DMA_Busy = 0;
 static volatile uint8_t s_i2c_recover_pending = 0U;
-static OLED_PortOps s_port = {0};
+static OLED_PortOps s_port{};
 static uint32_t s_port_errors = 0U;
 static uint32_t s_port_timeouts = 0U;
+
+typedef struct {
+    uint16_t left;
+    uint16_t right;
+    uint16_t top;
+    uint16_t bottom;
+} OLED_ClippedRect;
 
 #ifndef OLED_DMA_TIMEOUT_MS
 /* 默认 128x64 为 114 ms，并随显存容量增长。 */
 #define OLED_DMA_TIMEOUT_MS (50U + (OLED_GRAM_SIZE / 16U))
 #endif
+
+static int OLED_Clip_Physical_Rect(int16_t x, int16_t y,
+                                   int16_t width, int16_t height,
+                                   OLED_ClippedRect *result)
+{
+    if (result == NULL || width == 0 || height == 0) return 0;
+
+    const int32_t x_end = (int32_t)x + width;
+    const int32_t y_end = (int32_t)y + height;
+    int32_t left = x < x_end ? x : x_end;
+    int32_t right = x > x_end ? x : x_end;
+    int32_t top = y < y_end ? y : y_end;
+    int32_t bottom = y > y_end ? y : y_end;
+
+    if (left >= OLED_WIDTH || right <= 0 ||
+        top >= OLED_HEIGHT || bottom <= 0) {
+        return 0;
+    }
+
+    if (left < 0) left = 0;
+    if (right > OLED_WIDTH) right = OLED_WIDTH;
+    if (top < 0) top = 0;
+    if (bottom > OLED_HEIGHT) bottom = OLED_HEIGHT;
+    if (left >= right || top >= bottom) return 0;
+
+    result->left = (uint16_t)left;
+    result->right = (uint16_t)right;
+    result->top = (uint16_t)top;
+    result->bottom = (uint16_t)bottom;
+    return 1;
+}
+
+static int32_t OLED_Round_Divide(int32_t numerator, int32_t denominator)
+{
+    if (denominator < 0) {
+        numerator = -numerator;
+        denominator = -denominator;
+    }
+    if (numerator >= 0) {
+        return (numerator + denominator / 2) / denominator;
+    }
+    return -((-numerator + denominator / 2) / denominator);
+}
 
 int OLED_BindPort(const OLED_PortOps *ops)
 {
@@ -111,6 +161,8 @@ int OLED_BindPort(const OLED_PortOps *ops)
     s_port = *ops;
     OLED_DMA_Busy = 0U;
     s_i2c_recover_pending = 0U;
+    s_port_errors = 0U;
+    s_port_timeouts = 0U;
     return OLED_PORT_OK;
 }
 
@@ -130,6 +182,16 @@ void OLED_NotifyError(void)
 
 static void OLED_Recover_I2C(void);
 
+static void OLED_Record_Transfer_Failure(int status)
+{
+    const uint8_t timed_out = status == OLED_PORT_TIMEOUT ? 1U : 0U;
+    ++s_port_errors;
+    s_port_timeouts += timed_out;
+    if (s_port.on_failure != NULL) {
+        s_port.on_failure(s_port.context, timed_out);
+    }
+}
+
 /**
  * @brief  封装 DMA 发送，等待前次传输完成后启动新的 I2C Mem Write DMA
  * @return 1=成功启动, 0=HAL 返回错误
@@ -139,10 +201,10 @@ static int OLED_DMA_Send(uint16_t mode, uint8_t* data, uint16_t size)
     OLED_Wait_DMA();
     if (s_port.write_dma == NULL) return 0;
     OLED_DMA_Busy = 1U;
-    if (s_port.write_dma(s_port.context, OLED_I2C_ADDRESS,
-                         (uint8_t)mode, data, size) != OLED_PORT_OK) {
-        s_port_errors++;
-        if (s_port.on_failure != NULL) s_port.on_failure(s_port.context, 0U);
+    const int status = s_port.write_dma(s_port.context, OLED_I2C_ADDRESS,
+                                        (uint8_t)mode, data, size);
+    if (status != OLED_PORT_OK) {
+        OLED_Record_Transfer_Failure(status);
         OLED_Recover_I2C();
         return 0;
     }
@@ -300,6 +362,7 @@ void OLED_Init(){
 
     // 12. 正式开机
     OLED_Write_Byte(0xAF,CMD); // 0xAF: 开启OLED面板显示 (Display ON)
+    OLED_Wait_DMA();
 }
 //===============函数实现区域===============
 /**
@@ -320,6 +383,21 @@ void OLED_GRAM_Refresh(){
     OLED_DMA_Send(DATA, OLED_GRAM[0], OLED_GRAM_SIZE);
 #endif
 }
+
+#if OLED_USE_DOUBLE_BUFFER
+static void OLED_Copy_Buffer_To_Front(const uint8_t (*source)[OLED_WIDTH])
+{
+    if (source == OLED_GRAM) return;
+    OLED_Wait_DMA();
+    (void)memcpy(OLED_GRAM, source, sizeof(OLED_GRAM));
+}
+
+static void OLED_Present_Buffer(const uint8_t (*source)[OLED_WIDTH])
+{
+    OLED_Copy_Buffer_To_Front(source);
+    OLED_GRAM_Refresh();
+}
+#endif
 
 // ==================== 双缓冲管理 ====================
 #if OLED_USE_DOUBLE_BUFFER
@@ -357,15 +435,7 @@ void OLED_Select_Buffer(uint8_t buffer_id)
  */
 void OLED_Swap_Buffers(void)
 {
-    /* 前一帧 DMA 完成后才能覆盖其仍在读取的 OLED_GRAM。 */
-    OLED_Wait_DMA();
-    /* Step 1: 将后台缓冲区内容复制到前台 OLED_GRAM */
-    (void)memcpy(OLED_GRAM, OLED_BACK_BUFFER, sizeof(OLED_GRAM));
-
-    /* Step 2: 刷新屏幕 —— OLED_GRAM_Refresh 硬编码发送 OLED_GRAM */
-    OLED_GRAM_Refresh();
-
-    /* Step 3: 保持绘图目标指向后台，下一帧可直接绘制 */
+    OLED_Present_Buffer(OLED_BACK_BUFFER);
     draw_buffer         = OLED_BACK_BUFFER;
     g_current_buffer_id = 1u;
 }
@@ -400,9 +470,8 @@ float OLED_Calc_FPS(void)
     if (dt >= 1000u) {
         // FPS = 总帧数 / (总毫秒 / 1000)
         // 即：帧数 × 1000 ÷ 毫秒
-        s.val  = (s.cnt && dt)
-               ? (float)s.cnt * 1000.0 / (float)dt
-               : 0.0;
+        s.val  = static_cast<float>(s.cnt) * 1000.0f /
+                 static_cast<float>(dt);
         s.cnt  = 0;
         s.mark = now;
     }
@@ -413,7 +482,7 @@ float OLED_Calc_FPS(void)
 /**
  * @brief  整数版 FPS 计算（无浮点运算，适合无 FPU 芯片）
  * @retval 当前帧率（帧/秒），整数精度，如 60
- * @note   与 OLED_Calc_FPS 共享内部计数器，两者只需调用其中一个。
+ * @note   使用独立于 OLED_Calc_FPS 的计数器，两者只需调用其中一个。
  */
 uint16_t OLED_Calc_FPS_Int(void)
 {
@@ -429,7 +498,7 @@ uint16_t OLED_Calc_FPS_Int(void)
     s.cnt++;
 
     if (dt >= 1000u) {
-        s.val  = (dt > 0) ? (uint16_t)((s.cnt * 1000u) / dt) : 0u;
+        s.val  = static_cast<uint16_t>((s.cnt * 1000u) / dt);
         s.cnt  = 0;
         s.mark = now;
     }
@@ -457,7 +526,11 @@ void OLED_GRAM_Fill(void){
  */
 void OLED_Clear(){
     OLED_GRAM_Clear();
+#if OLED_USE_DOUBLE_BUFFER
+    OLED_Present_Buffer(draw_buffer);
+#else
     OLED_GRAM_Refresh();
+#endif
 }
 
 /**
@@ -528,30 +601,23 @@ void OLED_Set_Inverse(uint8_t inverse){
  */
 void OLED_SW_Invert_Rect(int16_t x0, int16_t y0, int16_t dx, int16_t dy)
 {
-    int16_t x1 = x0 + dx, y1 = y0 + dy;
-    int16_t xl = x0 < x1 ? x0 : x1, xr = x0 > x1 ? x0 : x1;
-    int16_t yu = y0 < y1 ? y0 : y1, yd = y0 > y1 ? y0 : y1;
+    OLED_ClippedRect rect;
+    if (!OLED_Clip_Physical_Rect(x0, y0, dx, dy, &rect)) return;
 
-    if (xl >= OLED_WIDTH || xr <= 0 || yu >= OLED_HEIGHT || yd <= 0) return;
-    if (xl < 0)           xl = 0;
-    if (xr > OLED_WIDTH)  xr = OLED_WIDTH;
-    if (yu < 0)           yu = 0;
-    if (yd > OLED_HEIGHT) yd = OLED_HEIGHT;
-
-    uint8_t pg_top = (uint8_t)(yu >> 3);
-    uint8_t pg_bot = (uint8_t)((yd - 1) >> 3);
-    uint8_t xs     = (uint8_t)xl;
-    uint8_t xe     = (uint8_t)(xr - 1);
-    uint8_t cols   = xe - xs + 1;
+    const uint8_t pg_top = (uint8_t)(rect.top >> 3);
+    const uint8_t pg_bot = (uint8_t)((rect.bottom - 1U) >> 3);
+    const uint8_t xs = (uint8_t)rect.left;
+    const uint8_t cols = (uint8_t)(rect.right - rect.left);
 
     if (pg_top == pg_bot) {
-        uint8_t mask = (uint8_t)((0xFF << (yu & 0x07)) & (0xFF >> (7 - ((yd - 1) & 0x07))));
+        uint8_t mask = (uint8_t)((0xFF << (rect.top & 0x07U)) &
+                                 (0xFF >> (7U - ((rect.bottom - 1U) & 0x07U))));
         uint8_t* p = DRAW_BUFFER(pg_top) + xs;
         uint8_t* end = p + cols;
         while (p < end) { *p ^= mask; p++; }
     } else {
         {
-            uint8_t mask = (uint8_t)(0xFF << (yu & 0x07));
+            uint8_t mask = (uint8_t)(0xFF << (rect.top & 0x07U));
             uint8_t* p = DRAW_BUFFER(pg_top) + xs;
             uint8_t* end = p + cols;
             while (p < end) { *p ^= mask; p++; }
@@ -562,7 +628,7 @@ void OLED_SW_Invert_Rect(int16_t x0, int16_t y0, int16_t dx, int16_t dy)
             while (p < end) { *p ^= 0xFF; p++; }
         }
         {
-            uint8_t mask = (uint8_t)(0xFF >> (7 - ((yd - 1) & 0x07)));
+            uint8_t mask = (uint8_t)(0xFF >> (7U - ((rect.bottom - 1U) & 0x07U)));
             uint8_t* p = DRAW_BUFFER(pg_bot) + xs;
             uint8_t* end = p + cols;
             while (p < end) { *p ^= mask; p++; }
@@ -725,7 +791,7 @@ static inline void OLED_Fill_Rect_Fast(uint8_t xs, uint8_t xe, uint8_t ys, uint8
 {
     uint8_t pg_top = ys >> 3;
     uint8_t pg_bot = ye >> 3;
-    uint8_t cols   = xe - xs + 1;
+    uint16_t cols = (uint16_t)((uint16_t)xe - xs + 1U);
 
     if (pg_top == pg_bot) {
         uint8_t mask = (uint8_t)((0xFF << (ys & 0x07)) & (0xFF >> (7 - (ye & 0x07))));
@@ -816,13 +882,13 @@ void OLED_Draw_Bitmap(int16_t x, int16_t y,
 
     // ========== 2. 裁剪到屏幕可见区域 ==========
     // 列方向裁剪（支持负数坐标，仅保留与 [0, OLED_WIDTH) 有交集的部分）
-    int16_t x1 = (int16_t)x + bmp_width - 1;        // 位图右下角列坐标
+    int32_t x1 = (int32_t)x + bmp_width - 1;        // 位图右下角列坐标
     if (x1 < 0 || x >= OLED_WIDTH) return;           // 整张位图在屏幕左/右侧之外
     uint8_t col_start = (x < 0) ? 0 : (uint8_t)x;
     uint8_t col_end   = (x1 >= OLED_WIDTH) ? (uint8_t)(OLED_WIDTH - 1) : (uint8_t)x1;
 
     // 行方向裁剪（支持负数坐标，仅保留与 [0, OLED_HEIGHT) 有交集的部分）
-    int16_t y1 = (int16_t)y + bmp_height - 1;        // 位图右下角行坐标
+    int32_t y1 = (int32_t)y + bmp_height - 1;        // 位图右下角行坐标
     if (y1 < 0 || y >= OLED_HEIGHT) return;           // 整张位图在屏幕上方/下方之外
     uint8_t row_start = (y < 0) ? 0 : (uint8_t)y;
     uint8_t row_end   = (y1 >= OLED_HEIGHT) ? (uint8_t)(OLED_HEIGHT - 1) : (uint8_t)y1;
@@ -830,10 +896,10 @@ void OLED_Draw_Bitmap(int16_t x, int16_t y,
     // 交集为空（理论上前面已排除，这里作为安全网）
     if (col_start > col_end || row_start > row_end) return;
 
-    uint8_t vis_cols = col_end - col_start + 1;   // 可见列数
+    uint16_t vis_cols = static_cast<uint16_t>(col_end) - col_start + 1U;
     uint8_t pg_start = row_start >> 3;             // 可见区域起始页号
     uint8_t pg_end   = row_end   >> 3;             // 可见区域结束页号
-    uint8_t src_off  = col_start - (uint8_t)x;     // 源位图中起始列的偏移量
+    uint16_t src_off = static_cast<uint16_t>(static_cast<int32_t>(col_start) - x);
 
 
     // ========== 4. 逐屏幕页绘制 ==========
@@ -850,12 +916,12 @@ void OLED_Draw_Bitmap(int16_t x, int16_t y,
         // 屏幕页 pg 覆盖的屏幕行 → 映射回源位图的行索引
         uint8_t img_start, img_end;
         if (pg == pg_start)
-            img_start = row_start - (uint8_t)y;         // 首可见行对应位图第几行
+            img_start = static_cast<uint8_t>(static_cast<int32_t>(row_start) - y);
         else
             img_start = (uint8_t)((pg << 3) - y);       // 该页第 0 行对应位图第几行
 
         if (pg == pg_end)
-            img_end = row_end - (uint8_t)y;             // 末可见行对应位图第几行
+            img_end = static_cast<uint8_t>(static_cast<int32_t>(row_end) - y);
         else
             img_end = (uint8_t)((pg << 3) + 7 - y);     // 该页第 7 行对应位图第几行
 
@@ -870,7 +936,7 @@ void OLED_Draw_Bitmap(int16_t x, int16_t y,
 
         if (sp_lo == sp_hi) {
             // ---- 情况 A: 所有位来自同一个源页 ----
-            for (uint8_t c = 0; c < vis_cols; c++) {
+            for (uint16_t c = 0; c < vis_cols; c++) {
                 // 从源字节取出有效位，右移对齐 bit0，再左移对齐目标页
                 uint8_t data = (uint8_t)(src_lo[c] >> shift) << first_bit;
                 // 读-修改-写：只改位图区域，保护相邻像素
@@ -880,7 +946,7 @@ void OLED_Draw_Bitmap(int16_t x, int16_t y,
             // ---- 情况 B: 跨两个源页，拼接两个源字节 ----
             const uint8_t* src_hi = bmp_data + (uint16_t)sp_hi * bmp_width + src_off;
             uint8_t shl = 8 - shift;
-            for (uint8_t c = 0; c < vis_cols; c++) {
+            for (uint16_t c = 0; c < vis_cols; c++) {
                 // 低位源页的高位 + 高位源页的低位 → 拼接为完整的 8 位数据
                 uint8_t data = (uint8_t)(src_lo[c] >> shift)
                              | (uint8_t)(src_hi[c] << shl);
@@ -900,7 +966,7 @@ void OLED_Draw_Bitmap(int16_t x, int16_t y,
  * @param  y:    起始行坐标 (0 ~ OLED_HEIGHT-1)
  */
 void OLED_Show_Char_ASCII(char tmp, const char* size, uint8_t x, uint8_t y){
-    if (x >= OLED_LOG_W || y >= OLED_LOG_H) return;
+    if (size == NULL || x >= OLED_LOG_W || y >= OLED_LOG_H) return;
     if (tmp < ' ' || tmp > '~') return;
 
     const uint8_t* font;
@@ -968,14 +1034,14 @@ void OLED_Show_Char_ASCII(char tmp, const char* size, uint8_t x, uint8_t y){
 
             uint8_t rows = (pg == pages - 1 && (char_h & 0x07))
                            ? (char_h & 0x07) : 8;
-            uint8_t base = y + (pg << 3);
+            uint16_t base = (uint16_t)((uint16_t)y + ((uint16_t)pg << 3));
 
             while (byte) {
                 uint8_t b = OLED_CTZ8(byte);
                 if (b >= rows) break;
-                uint8_t py = base + b;
+                uint16_t py = base + b;
                 if (py >= OLED_LOG_H) break;
-                OLED_Draw_Point(px, py);
+                OLED_Draw_Point(px, (uint8_t)py);
                 byte &= byte - 1;
             }
         }
@@ -990,7 +1056,7 @@ void OLED_Show_Char_ASCII(char tmp, const char* size, uint8_t x, uint8_t y){
  * @param  y:    字符串左上角起始行坐标 (0 ~ OLED_HEIGHT-1)
  */
 void OLED_Show_String(const char* str, const char* size, uint8_t x, uint8_t y){
-    if (!str || x >= OLED_LOG_W || y >= OLED_LOG_H) return;
+    if (str == NULL || size == NULL || x >= OLED_LOG_W || y >= OLED_LOG_H) return;
 
     uint8_t step;
     switch (size[0]) {
@@ -1016,104 +1082,68 @@ void OLED_Show_String(const char* str, const char* size, uint8_t x, uint8_t y){
  * @param  mode: 0=有限线段（两端必须完整在屏内）；1=无限直线（自动裁剪至屏幕边界）
  */
 void OLED_Draw_Line(int16_t x0, int16_t y0, int16_t dx, int16_t dy, uint8_t mode){
-    int16_t lw = (int16_t)OLED_LOG_W;
-    int16_t lh = (int16_t)OLED_LOG_H;
+    const int32_t lw = OLED_LOG_W;
+    const int32_t lh = OLED_LOG_H;
+    const int32_t start_x = x0;
+    const int32_t start_y = y0;
+    const int32_t delta_x = dx;
+    const int32_t delta_y = dy;
 
     if (mode == 0) {
-        if (x0 < 0 || x0 >= lw || y0 < 0 || y0 >= lh) return;
-        int16_t x1 = x0 + dx, y1 = y0 + dy;
+        if (start_x < 0 || start_x >= lw || start_y < 0 || start_y >= lh) return;
+        const int32_t x1 = start_x + delta_x;
+        const int32_t y1 = start_y + delta_y;
         if (x1 < 0 || x1 >= lw || y1 < 0 || y1 >= lh) return;
 
-        int16_t adx = dx < 0 ? -dx : dx;
-        int16_t ady = dy < 0 ? -dy : dy;
-        if (!adx && !ady) { OLED_Draw_Point((uint8_t)x0, (uint8_t)y0); return; }
+        const int32_t adx = delta_x < 0 ? -delta_x : delta_x;
+        const int32_t ady = delta_y < 0 ? -delta_y : delta_y;
+        if (adx == 0 && ady == 0) {
+            OLED_Draw_Point((uint8_t)start_x, (uint8_t)start_y);
+            return;
+        }
 
-        int16_t sx = dx > 0 ? 1 : -1;
-        int16_t sy = dy > 0 ? 1 : -1;
-        if (dx == 0) sx = 0;
-        if (dy == 0) sy = 0;
+        const int32_t sx = delta_x > 0 ? 1 : (delta_x < 0 ? -1 : 0);
+        const int32_t sy = delta_y > 0 ? 1 : (delta_y < 0 ? -1 : 0);
 
-        /* mode=0 线段：起终点已校验在屏幕内，无需逐点边界检查 */
-        int16_t x = x0, y = y0;
+        int32_t x = start_x;
+        int32_t y = start_y;
         if (adx >= ady) {
-            int16_t e = (ady << 1) - adx;
+            int32_t error = (ady << 1) - adx;
             while (1) {
                 OLED_Draw_Point((uint8_t)x, (uint8_t)y);
                 if (x == x1) break;
                 x += sx;
-                if (e > 0) { y += sy; e -= (adx << 1); }
-                e += (ady << 1);
+                if (error > 0) { y += sy; error -= (adx << 1); }
+                error += (ady << 1);
             }
         } else {
-            int16_t e = (adx << 1) - ady;
+            int32_t error = (adx << 1) - ady;
             while (1) {
                 OLED_Draw_Point((uint8_t)x, (uint8_t)y);
                 if (y == y1) break;
                 y += sy;
-                if (e > 0) { x += sx; e -= (ady << 1); }
-                e += (adx << 1);
+                if (error > 0) { x += sx; error -= (ady << 1); }
+                error += (adx << 1);
             }
+        }
+        return;
+    }
+
+    const int32_t adx = delta_x < 0 ? -delta_x : delta_x;
+    const int32_t ady = delta_y < 0 ? -delta_y : delta_y;
+    if (adx == 0 && ady == 0) return;
+
+    if (adx >= ady) {
+        for (int32_t x = 0; x < lw; ++x) {
+            const int32_t y = start_y +
+                OLED_Round_Divide((x - start_x) * delta_y, delta_x);
+            if (y >= 0 && y < lh) OLED_Draw_Point((uint8_t)x, (uint8_t)y);
         }
     } else {
-        /* mode=1 无限直线：需逐点裁剪 */
-        int16_t adx = dx < 0 ? -dx : dx;
-        int16_t ady = dy < 0 ? -dy : dy;
-        if (!adx && !ady) return;
-
-        int16_t sx = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
-        int16_t sy = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
-
-        // 正向
-        {
-            int16_t x = x0, y = y0;
-            if (adx >= ady) {
-                int16_t e = (ady << 1) - adx;
-                while (x >= 0 && x < lw) {
-                    if (y >= 0 && y < lh)
-                        OLED_Draw_Point((uint8_t)x, (uint8_t)y);
-                    x += sx;
-                    if (e > 0) { y += sy; e -= (adx << 1); }
-                    e += (ady << 1);
-                }
-            } else {
-                int16_t e = (adx << 1) - ady;
-                while (y >= 0 && y < lh) {
-                    if (x >= 0 && x < lw)
-                        OLED_Draw_Point((uint8_t)x, (uint8_t)y);
-                    y += sy;
-                    if (e > 0) { x += sx; e -= (ady << 1); }
-                    e += (adx << 1);
-                }
-            }
-        }
-        // 反向
-        {
-            int16_t x = x0 - sx, y = y0 - sy;
-            if (adx >= ady) {
-                int16_t e0 = (ady << 1) - adx;
-                if (e0 > 0) { y -= sy; e0 -= (adx << 1); }
-                e0 += (ady << 1);
-                int16_t e = e0;
-                while (x >= 0 && x < lw) {
-                    if (y >= 0 && y < lh)
-                        OLED_Draw_Point((uint8_t)x, (uint8_t)y);
-                    x -= sx;
-                    if (e > 0) { y -= sy; e -= (adx << 1); }
-                    e += (ady << 1);
-                }
-            } else {
-                int16_t e0 = (adx << 1) - ady;
-                if (e0 > 0) { x -= sx; e0 -= (ady << 1); }
-                e0 += (adx << 1);
-                int16_t e = e0;
-                while (y >= 0 && y < lh) {
-                    if (x >= 0 && x < lw)
-                        OLED_Draw_Point((uint8_t)x, (uint8_t)y);
-                    y -= sy;
-                    if (e > 0) { x -= sx; e -= (ady << 1); }
-                    e += (adx << 1);
-                }
-            }
+        for (int32_t y = 0; y < lh; ++y) {
+            const int32_t x = start_x +
+                OLED_Round_Divide((y - start_y) * delta_x, delta_y);
+            if (x >= 0 && x < lw) OLED_Draw_Point((uint8_t)x, (uint8_t)y);
         }
     }
 }
@@ -1129,33 +1159,36 @@ void OLED_Draw_Line(int16_t x0, int16_t y0, int16_t dx, int16_t dy, uint8_t mode
  */
 void OLED_Draw_Rectang(int16_t x, int16_t y, int16_t dx, int16_t dy, uint8_t mode)
 {
-    int16_t lw = (int16_t)OLED_LOG_W;
-    int16_t lh = (int16_t)OLED_LOG_H;
+    const int32_t lw = OLED_LOG_W;
+    const int32_t lh = OLED_LOG_H;
 
     if (x < 0 || x >= lw || y < 0 || y >= lh) return;
 
-    int16_t x1 = x + dx, y1 = y + dy;
+    const int32_t x1 = static_cast<int32_t>(x) + dx;
+    const int32_t y1 = static_cast<int32_t>(y) + dy;
 
     if (x1 < 0 || x1 >= lw || y1 < 0 || y1 >= lh) return;
 
     if (mode == 0) {
         OLED_Draw_Line(x,  y,  dx, 0,  0);
-        OLED_Draw_Line(x1, y,  0,  dy, 0);
-        OLED_Draw_Line(x1, y1, -dx, 0, 0);
-        OLED_Draw_Line(x,  y1, 0, -dy, 0);
+        OLED_Draw_Line(static_cast<int16_t>(x1), y, 0, dy, 0);
+        OLED_Draw_Line(static_cast<int16_t>(x1), static_cast<int16_t>(y1),
+                       static_cast<int16_t>(-static_cast<int32_t>(dx)), 0, 0);
+        OLED_Draw_Line(x, static_cast<int16_t>(y1), 0,
+                       static_cast<int16_t>(-static_cast<int32_t>(dy)), 0);
     } else {
         /* ROT_0 快速路径：直接按字节批量填充 */
         if (g_oled_rotation == OLED_ROT_0) {
-            uint8_t xs = (uint8_t)(x < x1 ? x : x1);
-            uint8_t xe = (uint8_t)(x > x1 ? x : x1);
-            uint8_t ys = (uint8_t)(y < y1 ? y : y1);
-            uint8_t ye = (uint8_t)(y > y1 ? y : y1);
+            const uint8_t xs = static_cast<uint8_t>(x < x1 ? x : x1);
+            const uint8_t xe = static_cast<uint8_t>(x > x1 ? x : x1);
+            const uint8_t ys = static_cast<uint8_t>(y < y1 ? y : y1);
+            const uint8_t ye = static_cast<uint8_t>(y > y1 ? y : y1);
             OLED_Fill_Rect_Fast(xs, xe, ys, ye);
         } else {
-            int16_t step = (dy > 0) ? 1 : -1;
-            int16_t end  = y1 + step;
-            for (int16_t row = y; row != end; row += step) {
-                OLED_Draw_Line(x, row, dx, 0, 0);
+            const int32_t step = (dy > 0) ? 1 : -1;
+            const int32_t end = y1 + step;
+            for (int32_t row = y; row != end; row += step) {
+                OLED_Draw_Line(x, static_cast<int16_t>(row), dx, 0, 0);
             }
         }
     }
@@ -1221,7 +1254,7 @@ void OLED_Show_Number(const void* num, OLED_NumType type,
                       uint8_t bits_or_prec, const char* size,
                       uint8_t x, uint8_t y)
 {
-    if (!num || x >= OLED_WIDTH || y >= OLED_HEIGHT) return;
+    if (num == NULL || size == NULL || x >= OLED_LOG_W || y >= OLED_LOG_H) return;
 
     char buf[16];          // -32768.xxxxx\0
     char* p = buf + 15;
@@ -1231,18 +1264,22 @@ void OLED_Show_Number(const void* num, OLED_NumType type,
         uint32_t v;
         int sign = 0;
         switch (type) {
-            case OLED_NUM_S8:  { int8_t  t = *(int8_t*)num;  sign = t<0; v = sign ? (uint32_t)-t : (uint32_t)t; } break;
-            case OLED_NUM_U8:    v = *(uint8_t*)num;  break;
-            case OLED_NUM_S16: { int16_t t = *(int16_t*)num; sign = t<0; v = sign ? (uint32_t)-t : (uint32_t)t; } break;
-            case OLED_NUM_U16:   v = *(uint16_t*)num; break;
-            case OLED_NUM_S32: { int32_t t = *(int32_t*)num; sign = t<0; v = sign ? (uint32_t)-t : (uint32_t)t; } break;
-            case OLED_NUM_U32:   v = *(uint32_t*)num; break;
+            case OLED_NUM_S8:  { int8_t  t = *static_cast<const int8_t*>(num);  sign = t < 0; v = sign ? static_cast<uint32_t>(-static_cast<int32_t>(t)) : static_cast<uint32_t>(t); } break;
+            case OLED_NUM_U8:    v = *static_cast<const uint8_t*>(num);  break;
+            case OLED_NUM_S16: { int16_t t = *static_cast<const int16_t*>(num); sign = t < 0; v = sign ? static_cast<uint32_t>(-static_cast<int32_t>(t)) : static_cast<uint32_t>(t); } break;
+            case OLED_NUM_U16:   v = *static_cast<const uint16_t*>(num); break;
+            case OLED_NUM_S32: {
+                int32_t t = *static_cast<const int32_t*>(num);
+                sign = t < 0;
+                v = sign ? (uint32_t)(-(t + 1)) + 1U : (uint32_t)t;
+            } break;
+            case OLED_NUM_U32:   v = *static_cast<const uint32_t*>(num); break;
             default: return;
         }
         do { *p-- = (char)('0' + (v % 10)); v /= 10; } while (v);
         if (sign) *p-- = '-';
     } else {
-        float f = *(float*)num;
+        float f = *static_cast<const float*>(num);
         int sign = f < 0.0f;
         if (sign) f = -f;
         uint8_t prec = bits_or_prec > 9 ? 9 : bits_or_prec;
@@ -1251,6 +1288,15 @@ void OLED_Show_Number(const void* num, OLED_NumType type,
             1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000
         };
         uint32_t pow10 = pow10_lut[prec];
+
+        if (f != f) {
+            OLED_Show_String("NaN", size, x, y);
+            return;
+        }
+        if (f > (float)UINT32_MAX / (float)pow10) {
+            OLED_Show_String("OVF", size, x, y);
+            return;
+        }
 
         uint32_t scaled = (uint32_t)(f * (float)pow10 + 0.5f);
         uint32_t ip   = scaled / pow10;
@@ -1270,102 +1316,76 @@ void OLED_Show_Number(const void* num, OLED_NumType type,
     OLED_Show_String(p + 1, size, x, y);
 }
 
-/**
- * @brief  在 OLED_GRAM 中绘制圆（不刷新屏幕）
- * @param  x0:   圆心列坐标 (signed, int16_t)
- * @param  y0:   圆心行坐标 (signed, int16_t)
- * @param  r:    半径（像素）
- * @param  mode: 0=圆边框, 1=实心填充圆
- * @note   Bresenham 中点画圆 + 水平线填充。
- *         圆心 + 半径构成的边界矩形若与屏幕完全无交集则直接返回。
- */
+static void OLED_Draw_Clipped_Point(int32_t x, int32_t y,
+                                    int32_t width, int32_t height)
+{
+    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    OLED_Draw_Point((uint8_t)x, (uint8_t)y);
+}
+
+static void OLED_Draw_Clipped_HLine(int32_t x1, int32_t x2, int32_t y,
+                                    int32_t width, int32_t height)
+{
+    if (y < 0 || y >= height) return;
+    if (x1 > x2) {
+        const int32_t swap = x1;
+        x1 = x2;
+        x2 = swap;
+    }
+    if (x2 < 0 || x1 >= width) return;
+    if (x1 < 0) x1 = 0;
+    if (x2 >= width) x2 = width - 1;
+
+    if (g_oled_rotation == OLED_ROT_0) {
+        OLED_HLine_Fast((uint8_t)x1, (uint8_t)x2, (uint8_t)y);
+        return;
+    }
+    for (int32_t x = x1; x <= x2; ++x) {
+        OLED_Draw_Point((uint8_t)x, (uint8_t)y);
+    }
+}
+
 void OLED_Draw_Circle(int16_t x0, int16_t y0, uint8_t r, uint8_t mode)
 {
-    // 使用逻辑尺寸做裁剪（跟随旋转方向）
-    int16_t lw = (int16_t)OLED_LOG_W;
-    int16_t lh = (int16_t)OLED_LOG_H;
+    const int32_t width = OLED_LOG_W;
+    const int32_t height = OLED_LOG_H;
 
-    // 边界矩形与逻辑屏幕无交集 → 直接返回
-    if (x0 + r < 0 || x0 - r >= lw ||
-        y0 + r < 0 || y0 - r >= lh) return;
+    if ((int32_t)x0 + r < 0 || (int32_t)x0 - r >= width ||
+        (int32_t)y0 + r < 0 || (int32_t)y0 - r >= height) return;
 
-    int16_t x  = r;
-    int16_t y  = 0;
-    int16_t err = 1 - r;  // Bresenham 中点圆法决策参数
-
-    // 逐点宏 —— 使用逻辑尺寸裁剪
-    #define PLOT8(px, py) do {                                 \
-        if ((uint16_t)(x0+(px)) < (uint16_t)lw && (uint16_t)(y0+(py)) < (uint16_t)lh) \
-            OLED_Draw_Point((uint8_t)(x0+(px)), (uint8_t)(y0+(py))); \
-    } while(0)
-
-    #define DRAW_HLINE(px1, px2, py) do {                      \
-        int16_t axa = x0 + (px1), axb = x0 + (px2);           \
-        if (axa > axb) { int16_t t = axa; axa = axb; axb = t; }\
-        int16_t ay = y0 + (py);                                \
-        if ((uint16_t)ay < (uint16_t)lh) {                     \
-            if (axa < 0) axa = 0;                              \
-            if (axb >= lw) axb = lw - 1;                       \
-            if (axa <= axb)                                     \
-                OLED_HLine_Fast((uint8_t)axa, (uint8_t)axb, (uint8_t)ay); \
-        }                                                      \
-    } while(0)
-
-    /* 非 ROT_0 回退到逐点 DRAW_HLINE */
-    #define DRAW_HLINE_SLOW(px1, px2, py) do {                 \
-        int16_t axa = x0 + (px1), axb = x0 + (px2);           \
-        if (axa > axb) { int16_t t = axa; axa = axb; axb = t; }\
-        int16_t ay = y0 + (py);                                \
-        if ((uint16_t)ay < (uint16_t)lh) {                     \
-            if (axa < 0) axa = 0;                              \
-            if (axb >= lw) axb = lw - 1;                       \
-            for (int16_t cx_ = axa; cx_ <= axb; cx_++)         \
-                OLED_Draw_Point((uint8_t)cx_, (uint8_t)ay);    \
-        }                                                      \
-    } while(0)
+    int32_t x = r;
+    int32_t y = 0;
+    int32_t err = 1 - (int32_t)r;
 
     if (mode == 0) {
-        // ---- 圆边框：Bresenham 八分对称描边 ----
         while (x >= y) {
-            PLOT8( x,  y);
-            PLOT8( y,  x);
-            PLOT8(-y,  x);
-            PLOT8(-x,  y);
-            PLOT8(-x, -y);
-            PLOT8(-y, -x);
-            PLOT8( y, -x);
-            PLOT8( x, -y);
-            y++;
-            if (err <= 0) { err += 2 * y + 1; }
-            else          { x--; err += 2 * (y - x) + 1; }
-        }
-    } else if (g_oled_rotation == OLED_ROT_0) {
-        // ---- 实心圆 ROT_0 快速路径：用 OLED_HLine_Fast 批量填充 ----
-        while (x >= y) {
-            DRAW_HLINE(-x,  x,  y);
-            DRAW_HLINE(-y,  y,  x);
-            DRAW_HLINE(-x,  x, -y);
-            DRAW_HLINE(-y,  y, -x);
+            OLED_Draw_Clipped_Point((int32_t)x0 + x, (int32_t)y0 + y, width, height);
+            OLED_Draw_Clipped_Point((int32_t)x0 + y, (int32_t)y0 + x, width, height);
+            OLED_Draw_Clipped_Point((int32_t)x0 - y, (int32_t)y0 + x, width, height);
+            OLED_Draw_Clipped_Point((int32_t)x0 - x, (int32_t)y0 + y, width, height);
+            OLED_Draw_Clipped_Point((int32_t)x0 - x, (int32_t)y0 - y, width, height);
+            OLED_Draw_Clipped_Point((int32_t)x0 - y, (int32_t)y0 - x, width, height);
+            OLED_Draw_Clipped_Point((int32_t)x0 + y, (int32_t)y0 - x, width, height);
+            OLED_Draw_Clipped_Point((int32_t)x0 + x, (int32_t)y0 - y, width, height);
             y++;
             if (err <= 0) { err += 2 * y + 1; }
             else          { x--; err += 2 * (y - x) + 1; }
         }
     } else {
-        // ---- 实心圆旋转模式：逐点绘制 ----
         while (x >= y) {
-            DRAW_HLINE_SLOW(-x,  x,  y);
-            DRAW_HLINE_SLOW(-y,  y,  x);
-            DRAW_HLINE_SLOW(-x,  x, -y);
-            DRAW_HLINE_SLOW(-y,  y, -x);
+            OLED_Draw_Clipped_HLine((int32_t)x0 - x, (int32_t)x0 + x,
+                                    (int32_t)y0 + y, width, height);
+            OLED_Draw_Clipped_HLine((int32_t)x0 - y, (int32_t)x0 + y,
+                                    (int32_t)y0 + x, width, height);
+            OLED_Draw_Clipped_HLine((int32_t)x0 - x, (int32_t)x0 + x,
+                                    (int32_t)y0 - y, width, height);
+            OLED_Draw_Clipped_HLine((int32_t)x0 - y, (int32_t)x0 + y,
+                                    (int32_t)y0 - x, width, height);
             y++;
             if (err <= 0) { err += 2 * y + 1; }
             else          { x--; err += 2 * (y - x) + 1; }
         }
     }
-
-    #undef PLOT8
-    #undef DRAW_HLINE
-    #undef DRAW_HLINE_SLOW
 }
 
 
@@ -1385,34 +1405,26 @@ void OLED_Draw_Circle(int16_t x0, int16_t y0, uint8_t r, uint8_t mode)
  */
 void OLED_Clear_Rect(int16_t x0, int16_t y0, int16_t dx, int16_t dy)
 {
-    // 区间 [x0, x0+dx) × [y0, y0+dy)，与屏幕求交集后清零
-    int16_t x1 = x0 + dx, y1 = y0 + dy;
-    int16_t xl = x0 < x1 ? x0 : x1, xr = x0 > x1 ? x0 : x1;
-    int16_t yu = y0 < y1 ? y0 : y1, yd = y0 > y1 ? y0 : y1;
+    OLED_ClippedRect rect;
+    if (!OLED_Clip_Physical_Rect(x0, y0, dx, dy, &rect)) return;
 
-    if (xl >= OLED_WIDTH || xr <= 0 || yu >= OLED_HEIGHT || yd <= 0) return;
-    if (xl < 0)           xl = 0;
-    if (xr > OLED_WIDTH)  xr = OLED_WIDTH;
-    if (yu < 0)           yu = 0;
-    if (yd > OLED_HEIGHT) yd = OLED_HEIGHT;
-
-    uint8_t pg_top = (uint8_t)(yu >> 3);
-    uint8_t pg_bot = (uint8_t)((yd - 1) >> 3);
-    uint8_t xs     = (uint8_t)xl;
-    uint8_t xe     = (uint8_t)(xr - 1);
-    uint8_t cols   = xe - xs + 1;
+    const uint8_t pg_top = (uint8_t)(rect.top >> 3);
+    const uint8_t pg_bot = (uint8_t)((rect.bottom - 1U) >> 3);
+    const uint8_t xs = (uint8_t)rect.left;
+    const uint16_t cols = rect.right - rect.left;
 
     if (pg_top == pg_bot) {
-        uint8_t mask = (uint8_t)((0xFF << (yu & 0x07)) & (0xFF >> (7 - ((yd - 1) & 0x07))));
+        uint8_t mask = (uint8_t)((0xFF << (rect.top & 0x07U)) &
+                                 (0xFF >> (7U - ((rect.bottom - 1U) & 0x07U))));
         uint8_t* base = DRAW_BUFFER(pg_top) + xs;
-        for (uint8_t c = 0; c < cols; c++)
+        for (uint16_t c = 0; c < cols; c++)
             base[c] &= ~mask;
     } else {
         // 首页
         {
-            uint8_t mask = (uint8_t)(0xFF << (yu & 0x07));
+            uint8_t mask = (uint8_t)(0xFF << (rect.top & 0x07U));
             uint8_t* base = DRAW_BUFFER(pg_top) + xs;
-            for (uint8_t c = 0; c < cols; c++)
+            for (uint16_t c = 0; c < cols; c++)
                 base[c] &= ~mask;
         }
         // 中间完整页
@@ -1421,9 +1433,9 @@ void OLED_Clear_Rect(int16_t x0, int16_t y0, int16_t dx, int16_t dy)
         }
         // 末页
         {
-            uint8_t mask = (uint8_t)(0xFF >> (7 - ((yd - 1) & 0x07)));
+            uint8_t mask = (uint8_t)(0xFF >> (7U - ((rect.bottom - 1U) & 0x07U)));
             uint8_t* base = DRAW_BUFFER(pg_bot) + xs;
-            for (uint8_t c = 0; c < cols; c++)
+            for (uint16_t c = 0; c < cols; c++)
                 base[c] &= ~mask;
         }
     }
@@ -1447,25 +1459,8 @@ void OLED_Refresh_Rect(int16_t x0, int16_t y0, int16_t dx, int16_t dy)
     if (refresh_in_progress) return;
     refresh_in_progress = 1;
 
-    int16_t x1 = x0 + dx;
-    int16_t y1 = y0 + dy;
-
-    int16_t xl = x0 < x1 ? x0 : x1;
-    int16_t xr = x0 > x1 ? x0 : x1;
-    int16_t yu = y0 < y1 ? y0 : y1;
-    int16_t yd = y0 > y1 ? y0 : y1;
-
-    // 与屏幕无交集
-    if (xl >= OLED_WIDTH || xr < 0 || yu >= OLED_HEIGHT || yd < 0) goto exit;
-
-    // 裁剪到屏幕交集
-    if (xl < 0)          xl = 0;
-    if (xr > OLED_WIDTH)  xr = OLED_WIDTH;
-    if (yu < 0)          yu = 0;
-    if (yd > OLED_HEIGHT) yd = OLED_HEIGHT;
-
-    // 交集为空
-    if (xl >= xr || yu >= yd) goto exit;
+    OLED_ClippedRect rect;
+    if (!OLED_Clip_Physical_Rect(x0, y0, dx, dy, &rect)) goto exit;
 #if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
 #if OLED_USE_DOUBLE_BUFFER
     if (draw_buffer != OLED_GRAM) (void)memcpy(OLED_GRAM, draw_buffer, sizeof(OLED_GRAM));
@@ -1475,10 +1470,10 @@ void OLED_Refresh_Rect(int16_t x0, int16_t y0, int16_t dx, int16_t dy)
     goto exit;
 #endif
     {
-        uint8_t  pg_start  = (uint8_t)(yu >> 3);
-        uint8_t  pg_end    = (uint8_t)((yd - 1) >> 3);
-        uint8_t  col_start = (uint8_t)xl;
-        uint8_t  col_end   = (uint8_t)(xr - 1);
+        uint8_t  pg_start  = (uint8_t)(rect.top >> 3);
+        uint8_t  pg_end    = (uint8_t)((rect.bottom - 1U) >> 3);
+        uint8_t  col_start = (uint8_t)rect.left;
+        uint8_t  col_end   = (uint8_t)(rect.right - 1U);
         uint16_t cols      = (uint16_t)(col_end - col_start + 1);
 
         /* 命令缓冲必须是 static：端口层 DMA 异步读取该地址，而
@@ -1489,7 +1484,9 @@ void OLED_Refresh_Rect(int16_t x0, int16_t y0, int16_t dx, int16_t dy)
         OLED_Wait_DMA();
 
         // 设置寻址窗口
-        win[0] = 0x21; win[1] = col_start; win[2] = col_end;
+        win[0] = 0x21;
+        win[1] = (uint8_t)(OLED_COLUMN_OFFSET + col_start);
+        win[2] = (uint8_t)(OLED_COLUMN_OFFSET + col_end);
         win[3] = 0x22; win[4] = pg_start;  win[5] = pg_end;
         (void)OLED_DMA_Send(CMD, win, sizeof(win));
 
@@ -1509,7 +1506,9 @@ void OLED_Refresh_Rect(int16_t x0, int16_t y0, int16_t dx, int16_t dy)
         }
 
         // 恢复全屏窗口
-        win[0] = 0x21; win[1] = 0; win[2] = (uint8_t)(OLED_WIDTH - 1);
+        win[0] = 0x21;
+        win[1] = OLED_COLUMN_OFFSET;
+        win[2] = (uint8_t)(OLED_COLUMN_OFFSET + OLED_WIDTH - 1);
         win[3] = 0x22; win[4] = 0; win[5] = (uint8_t)(OLED_PAGES - 1);
         (void)OLED_DMA_Send(CMD, win, sizeof(win));
 
@@ -1535,6 +1534,7 @@ exit:
  */
 void OLED_Printf(const char* size, uint8_t x, uint8_t y, const char* fmt, ...)
 {
+    if (size == NULL || fmt == NULL) return;
     char buf[OLED_PRINTF_BUF_SIZE];
     va_list ap;
     va_start(ap, fmt);
@@ -1629,22 +1629,26 @@ void OLED_Draw_ProgressBar(uint8_t x, uint8_t y, uint8_t w, uint8_t h,
                            uint8_t percent, uint8_t style)
 {
     if (w < 4 || h < 3) return;
+    if ((uint16_t)x + w > OLED_LOG_W || (uint16_t)y + h > OLED_LOG_H) return;
     if (percent > 100) percent = 100;
+
+    const uint8_t right = (uint8_t)((uint16_t)x + w - 1U);
+    const uint8_t bottom = (uint8_t)((uint16_t)y + h - 1U);
 
     // 外边框（四条水平/垂直线段用快速路径）
     if (g_oled_rotation == OLED_ROT_0 &&
         x + w <= OLED_WIDTH && y + h <= OLED_HEIGHT) {
-        OLED_HLine_Fast(x, x + w - 1, y);
-        OLED_HLine_Fast(x, x + w - 1, y + h - 1);
+        OLED_HLine_Fast(x, right, y);
+        OLED_HLine_Fast(x, right, bottom);
         for (uint8_t row = y; row < y + h; row++) {
             OLED_DRAW_POINT_FAST(x, row);
-            OLED_DRAW_POINT_FAST(x + w - 1, row);
+            OLED_DRAW_POINT_FAST(right, row);
         }
     } else {
         OLED_Draw_Line(x, y, w - 1, 0, 0);
-        OLED_Draw_Line(x, y + h - 1, w - 1, 0, 0);
+        OLED_Draw_Line(x, bottom, (int16_t)w - 1, 0, 0);
         OLED_Draw_Line(x, y, 0, h - 1, 0);
-        OLED_Draw_Line(x + w - 1, y, 0, h - 1, 0);
+        OLED_Draw_Line(right, y, 0, (int16_t)h - 1, 0);
     }
 
     uint8_t inner_w = w - 2;
@@ -1654,12 +1658,12 @@ void OLED_Draw_ProgressBar(uint8_t x, uint8_t y, uint8_t w, uint8_t h,
 
     uint8_t x0 = x + 1;
     uint8_t y0_f = y + 1;
-    uint8_t ye = y0_f + inner_h - 1;
+    uint8_t ye = (uint8_t)((uint16_t)y0_f + inner_h - 1U);
 
     if (g_oled_rotation == OLED_ROT_0 &&
         x0 + fill_w <= OLED_WIDTH && ye < OLED_HEIGHT) {
         if (style == 0) {
-            OLED_Fill_Rect_Fast(x0, x0 + fill_w - 1, y0_f, ye);
+            OLED_Fill_Rect_Fast(x0, (uint8_t)((uint16_t)x0 + fill_w - 1U), y0_f, ye);
         } else {
             for (uint8_t dy = 0; dy < inner_h; dy++) {
                 uint8_t row = y0_f + dy;
@@ -1740,11 +1744,4 @@ void OLED_Scroll_Soft_Horizontal(int16_t offset)
         memcpy(row + n, temp, OLED_WIDTH - n);
     }
 }
-
-
-
-
-
-
-
 

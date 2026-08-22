@@ -69,6 +69,9 @@ extern "C" {
 #ifndef OLED_PRINTF_BUF_SIZE
 #define OLED_PRINTF_BUF_SIZE    64
 #endif
+#if OLED_PRINTF_BUF_SIZE < 2
+#error "OLED_PRINTF_BUF_SIZE must be at least 2"
+#endif
 
 // ==================== 屏幕旋转 ====================
 // 旋转在 OLED_Draw_Point 内部做坐标变换，对所有上层绘图函数透明。
