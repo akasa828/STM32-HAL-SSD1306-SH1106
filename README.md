@@ -89,6 +89,12 @@ cmake --build --preset Debug
 The default I2C clock is the original project's tested configuration. Reduce it
 when a module, cable length, or pull-up network is unstable.
 
+## Used in a complete project
+
+This driver was separated from [SD Card OVID Player](https://github.com/akasa828/SD_Card_OVID_Player),
+where it drives the animated UI and double-buffered video output of an
+STM32F103 SD card video player.
+
 ## Repository layout
 
 - `Core/OLED/` — platform-neutral driver, buffers, drawing, and fonts.

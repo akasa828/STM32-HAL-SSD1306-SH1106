@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Linked the original OVID player as a complete usage example.
+
 ## v1.0.0 - 2026-08-21
 
 - First independent release of the SSD1306/SH1106 OLED driver.

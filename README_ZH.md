@@ -42,4 +42,9 @@
 #define OLED_CONTROLLER OLED_CONTROLLER_SSD1306
 ```
 
+## 实际项目
+
+这个驱动从 [SD Card OVID Player](https://github.com/akasa828/SD_Card_OVID_Player) 中拆分而来，
+在该 STM32F103 SD 卡播放器中负责动画 UI 和双缓冲视频输出。
+
 项目自有代码采用 [MIT License](LICENSE)；STM32 HAL 与 CMSIS 继续遵循各自目录中的许可证，详见[第三方说明](THIRD_PARTY_LICENSES.md)。
