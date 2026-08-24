@@ -93,6 +93,7 @@ target_compile_features(oled_hal_adapter_tests PRIVATE cxx_std_17)
 target_compile_definitions(oled_hal_adapter_tests PRIVATE
     OLED_WIDTH=16
     OLED_HEIGHT=16
+    OLED_I2C_ADDRESS_7BIT=0x3D
     OLED_ENABLE_WAVE=0
     OLED_USE_DOUBLE_BUFFER=0
 )

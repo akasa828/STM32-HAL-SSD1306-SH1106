@@ -89,7 +89,7 @@ uint8_t (*draw_buffer)[OLED_WIDTH] = OLED_GRAM;
 uint8_t g_current_buffer_id = 0;
 #endif /* OLED_USE_DOUBLE_BUFFER */
 
-const uint8_t OLED_I2C_ADDRESS = 0x78;  // SSD1306 在 I2C 总线上的默认 7 位写地址 (0x3C << 1)
+const uint8_t OLED_I2C_ADDRESS = (uint8_t)(OLED_I2C_ADDRESS_7BIT << 1);
 const uint8_t CMD = 0x00; //指令命令
 const uint8_t DATA = 0x40; //数据命令
 

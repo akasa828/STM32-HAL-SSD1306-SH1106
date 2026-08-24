@@ -15,6 +15,7 @@ uint32_t g_deinits = 0;
 uint32_t g_reinitializations = 0;
 uint32_t g_successes = 0;
 uint32_t g_failures = 0;
+uint16_t g_last_address = 0;
 
 void reset_hal()
 {
@@ -27,6 +28,7 @@ void reset_hal()
     g_reinitializations = 0;
     g_successes = 0;
     g_failures = 0;
+    g_last_address = 0;
 }
 
 void reinitialize(void *, I2C_HandleTypeDef *i2c)
@@ -64,9 +66,11 @@ OLED_STM32_HAL make_adapter(I2C_HandleTypeDef &i2c)
 }
 
 extern "C" HAL_StatusTypeDef HAL_I2C_Mem_Write_DMA(
-    I2C_HandleTypeDef *, uint16_t, uint16_t, uint16_t, uint8_t *, uint16_t)
+    I2C_HandleTypeDef *, uint16_t address, uint16_t, uint16_t,
+    uint8_t *, uint16_t)
 {
     ++g_writes;
+    g_last_address = address;
     return g_write_status;
 }
 
@@ -117,6 +121,8 @@ int main()
     if (!expect(OLED_STM32_HAL_Attach(&adapter) == OLED_PORT_OK,
                 "attach valid adapter")) return 1;
     OLED_Write_Byte(0xAE, CMD);
+    if (!expect(g_last_address == 0x7AU,
+                "configured 7-bit address must be shifted for STM32 HAL")) return 1;
     if (!expect(adapter.transfer_active == 1U && OLED_DMA_Busy == 1U,
                 "successful DMA start must mark the transfer active")) return 1;
 
