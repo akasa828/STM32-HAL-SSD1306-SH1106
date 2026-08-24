@@ -228,6 +228,7 @@ void test_timeout_wait_recovers(TestContext &test)
 {
     FakePort port;
     reset_driver(port);
+    const uint32_t errors_before = OLED_Get_I2C_Error_Count();
     const uint32_t before = OLED_Get_I2C_Timeout_Count();
     port.complete_immediately = false;
 
@@ -237,6 +238,8 @@ void test_timeout_wait_recovers(TestContext &test)
     test.expect(OLED_DMA_Busy == 0, "DMA timeout must clear the busy flag");
     test.expect(OLED_Get_I2C_Timeout_Count() == before + 1,
                 "DMA wait timeout must increment the timeout count");
+    test.expect(OLED_Get_I2C_Error_Count() == errors_before + 1,
+                "DMA wait timeout must increment the transfer error count");
     test.expect(port.timeout_failures == 1,
                 "DMA wait timeout must be reported as a timeout failure");
     test.expect(port.aborts == 1 && port.recoveries == 1,

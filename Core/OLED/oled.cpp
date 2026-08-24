@@ -233,8 +233,7 @@ void OLED_Wait_DMA()
     uint32_t start = s_port.tick_ms(s_port.context);
     while (OLED_DMA_Busy) {
         if ((s_port.tick_ms(s_port.context) - start) > OLED_DMA_TIMEOUT_MS) {
-            s_port_timeouts++;
-            if (s_port.on_failure != NULL) s_port.on_failure(s_port.context, 1U);
+            OLED_Record_Transfer_Failure(OLED_PORT_TIMEOUT);
             OLED_Recover_I2C();
             break;
         }
