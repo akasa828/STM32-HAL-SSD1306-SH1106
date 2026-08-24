@@ -25,11 +25,18 @@ typedef struct {
 } DMA_HandleTypeDef;
 
 typedef struct {
+    uint32_t AddressingMode;
+} I2C_InitTypeDef;
+
+typedef struct {
     DMA_HandleTypeDef *hdmatx;
     HAL_I2C_StateTypeDef state;
+    I2C_InitTypeDef Init;
 } I2C_HandleTypeDef;
 
 #define I2C_MEMADD_SIZE_8BIT 1U
+#define I2C_ADDRESSINGMODE_7BIT 0x00004000U
+#define I2C_ADDRESSINGMODE_10BIT 0x0000C000U
 
 HAL_StatusTypeDef HAL_I2C_Mem_Write_DMA(I2C_HandleTypeDef *i2c,
                                         uint16_t address,

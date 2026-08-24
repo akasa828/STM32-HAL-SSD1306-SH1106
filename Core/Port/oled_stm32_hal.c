@@ -100,6 +100,8 @@ static uint32_t hal_timeouts(void *context)
 int OLED_STM32_HAL_Attach(OLED_STM32_HAL *adapter)
 {
     if (adapter == NULL || adapter->i2c == NULL) return OLED_PORT_NOT_BOUND;
+    if (adapter->i2c->Init.AddressingMode != I2C_ADDRESSINGMODE_7BIT)
+        return OLED_PORT_ERROR;
     adapter->transfer_active = 0U;
     OLED_PortOps ops = {
         .context = adapter,

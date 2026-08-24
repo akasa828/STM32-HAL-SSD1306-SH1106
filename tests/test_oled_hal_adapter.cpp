@@ -103,9 +103,16 @@ int main()
 {
     reset_hal();
     DMA_HandleTypeDef dma{};
-    I2C_HandleTypeDef i2c{&dma, HAL_I2C_STATE_READY};
-    I2C_HandleTypeDef other{&dma, HAL_I2C_STATE_READY};
+    I2C_HandleTypeDef i2c{&dma, HAL_I2C_STATE_READY,
+                          {I2C_ADDRESSINGMODE_7BIT}};
+    I2C_HandleTypeDef other{&dma, HAL_I2C_STATE_READY,
+                            {I2C_ADDRESSINGMODE_7BIT}};
     OLED_STM32_HAL adapter = make_adapter(i2c);
+
+    i2c.Init.AddressingMode = I2C_ADDRESSINGMODE_10BIT;
+    if (!expect(OLED_STM32_HAL_Attach(&adapter) == OLED_PORT_ERROR,
+                "attach must reject 10-bit addressing")) return 1;
+    i2c.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
 
     if (!expect(OLED_STM32_HAL_Attach(&adapter) == OLED_PORT_OK,
                 "attach valid adapter")) return 1;
