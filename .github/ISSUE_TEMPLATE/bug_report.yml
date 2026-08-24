@@ -1,0 +1,35 @@
+name: Bug report
+description: Report a reproducible drawing, DMA, controller, or build problem
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to provide a reproducible display report.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include the expected image, actual image, and the smallest reproduction you can provide.
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware and display
+      description: MCU, controller/module, resolution, I2C address/clock, pull-ups, supply voltage, and wiring length.
+    validations:
+      required: true
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Configuration and logs
+      description: Paste the relevant OLED macros, error counters, and the commit or release used.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Photo or screenshot
+      description: If the problem is visual, drag a clear photo or screenshot here.

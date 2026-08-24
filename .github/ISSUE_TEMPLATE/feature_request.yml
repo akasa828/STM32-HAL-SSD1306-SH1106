@@ -1,0 +1,11 @@
+name: Feature request
+description: Suggest an improvement or a new supported use case
+title: "[Feature] "
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Idea
+      description: What would you like to draw or configure, and why is the current API not enough?
+    validations:
+      required: true

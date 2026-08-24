@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Rework the English and Chinese project pages around the portable drawing
+  stack, runnable demo, minimal integration path, and verified configurations.
+- Add an architecture diagram, contribution guide, issue forms, and pull
+  request checklist.
+
 ## v1.0.2 - 2026-08-25
 
 - Keep SH1106 initialization and scroll APIs free of SSD1306-only commands.

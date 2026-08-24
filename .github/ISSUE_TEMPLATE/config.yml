@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: API and porting documentation
+    url: https://github.com/akasa828/STM32-HAL-SSD1306-SH1106/tree/main/docs
+    about: Check the API and porting notes before opening an integration question.
