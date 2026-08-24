@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="250" viewBox="0 0 900 250" role="img" aria-labelledby="title desc">
+  <title id="title">Portable OLED driver architecture</title>
+  <desc id="desc">Application drawing flows through buffers and controller logic to a portable port interface, STM32 HAL adapter, and OLED.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#11131e"/>
+      <stop offset="1" stop-color="#191a2b"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L7,3 z" fill="#b79cff"/>
+    </marker>
+  </defs>
+  <rect width="900" height="250" rx="18" fill="url(#bg)"/>
+  <text x="36" y="38" fill="#f0f6fc" font-family="Segoe UI,Arial,sans-serif" font-size="20" font-weight="700">Drawing without a fixed MCU boundary</text>
+  <text x="36" y="62" fill="#989bb3" font-family="Segoe UI,Arial,sans-serif" font-size="13">Framebuffer code stays portable; DMA, recovery, and diagnostics live behind OLED_PortOps.</text>
+
+  <g font-family="Segoe UI,Arial,sans-serif" text-anchor="middle">
+    <g transform="translate(28 94)">
+      <rect width="124" height="98" rx="12" fill="#25283d" stroke="#4b506d"/>
+      <text x="62" y="38" fill="#ffffff" font-size="15" font-weight="700">Application</text>
+      <text x="62" y="63" fill="#b4b7ca" font-size="12">UI · animation</text>
+      <text x="62" y="80" fill="#b4b7ca" font-size="12">graphics</text>
+    </g>
+    <g transform="translate(171 94)">
+      <rect width="124" height="98" rx="12" fill="#302a4c" stroke="#665b91"/>
+      <text x="62" y="38" fill="#ffffff" font-size="15" font-weight="700">Drawing core</text>
+      <text x="62" y="63" fill="#c6bce1" font-size="12">text · shapes</text>
+      <text x="62" y="80" fill="#c6bce1" font-size="12">bitmaps</text>
+    </g>
+    <g transform="translate(314 94)">
+      <rect width="124" height="98" rx="12" fill="#352950" stroke="#735fa0"/>
+      <text x="62" y="38" fill="#ffffff" font-size="15" font-weight="700">Frame buffers</text>
+      <text x="62" y="63" fill="#cdbce9" font-size="12">single · double</text>
+      <text x="62" y="80" fill="#cdbce9" font-size="12">partial refresh</text>
+    </g>
+    <g transform="translate(457 94)">
+      <rect width="124" height="98" rx="12" fill="#3a274c" stroke="#815893"/>
+      <text x="62" y="38" fill="#ffffff" font-size="15" font-weight="700">Controller</text>
+      <text x="62" y="63" fill="#d5b9df" font-size="12">SSD1306</text>
+      <text x="62" y="80" fill="#d5b9df" font-size="12">SH1106</text>
+    </g>
+    <g transform="translate(600 94)">
+      <rect width="124" height="98" rx="12" fill="#3b293f" stroke="#865d86"/>
+      <text x="62" y="38" fill="#ffffff" font-size="15" font-weight="700">OLED_PortOps</text>
+      <text x="62" y="63" fill="#d8bfd6" font-size="12">STM32 HAL</text>
+      <text x="62" y="80" fill="#d8bfd6" font-size="12">or custom port</text>
+    </g>
+    <g transform="translate(743 94)">
+      <rect width="129" height="98" rx="12" fill="#313442" stroke="#6c7189"/>
+      <text x="64.5" y="38" fill="#ffffff" font-size="15" font-weight="700">I2C OLED</text>
+      <text x="64.5" y="63" fill="#c5c8d4" font-size="12">DMA refresh</text>
+      <text x="64.5" y="80" fill="#c5c8d4" font-size="12">error recovery</text>
+    </g>
+  </g>
+  <g stroke="#b79cff" stroke-width="2" marker-end="url(#arrow)">
+    <path d="M152 143 H168"/>
+    <path d="M295 143 H311"/>
+    <path d="M438 143 H454"/>
+    <path d="M581 143 H597"/>
+    <path d="M724 143 H740"/>
+  </g>
+  <text x="450" y="225" fill="#7f8299" font-family="Segoe UI,Arial,sans-serif" font-size="12" text-anchor="middle">The core can move to another MCU without importing STM32 headers.</text>
+</svg>
