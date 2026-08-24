@@ -278,6 +278,7 @@ void OLED_Init(){
     // 1. 关闭显示（防止初始化配置期间屏幕出现乱码、花屏或闪烁）
     OLED_Write_Byte(0xAE,CMD); // 0xAE: 进入休眠模式 (Display OFF)
 
+#if OLED_CONTROLLER == OLED_CONTROLLER_SSD1306
     // ==================【硬件滚动初始化】==================
     // 1.1 强制关闭所有硬件滚动
     // 避坑：如果是单片机软复位（没断电），OLED 的滚动引擎可能还在后台跑，
@@ -290,6 +291,7 @@ void OLED_Init(){
     OLED_Write_Byte(0x00,CMD); // 顶部固定区域行数 = 0
     OLED_Write_Byte(OLED_HEIGHT, CMD); // 滚动区域行数 = 64 (全屏)
     // ==============================================================
+#endif
 
     // 2. 优化时钟（调高芯片内部振荡器频率，使屏幕硬件层面的刷新极限拉到最高）
     OLED_Write_Byte(0xD5,CMD); // 0xD5: 设置显示时钟分频比与振荡器频率 (Set Display Clock Divide Ratio)
@@ -305,10 +307,8 @@ void OLED_Init(){
     OLED_Write_Byte(0x40,CMD); // 0x40: 设置显示RAM的起始行地址为0 (Set Display Start Line)
 
     // 5. 配置为水平寻址模式
+#if OLED_CONTROLLER == OLED_CONTROLLER_SSD1306
     OLED_Write_Byte(0x20,CMD); // 0x20: 设置内存寻址模式 (Set Memory Addressing Mode)
-#if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
-    OLED_Write_Byte(0x02,CMD); // SH1106 page addressing
-#else
     OLED_Write_Byte(0x00,CMD); // SSD1306 horizontal addressing
 #endif
 
@@ -682,6 +682,14 @@ void OLED_Import_GRAM(const uint8_t* src){
 void OLED_Scroll_HW_HV(uint8_t dir, uint8_t start_pg, uint8_t end_pg,
                        uint8_t speed, uint8_t offset)
 {
+#if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
+    (void)dir;
+    (void)start_pg;
+    (void)end_pg;
+    (void)speed;
+    (void)offset;
+    return;
+#else
     // 参数有效性检查
     if (start_pg >= OLED_PAGES || end_pg >= OLED_PAGES) return;
     if (end_pg < start_pg) return;
@@ -702,6 +710,7 @@ void OLED_Scroll_HW_HV(uint8_t dir, uint8_t start_pg, uint8_t end_pg,
     (void)OLED_DMA_Send(CMD, cmd_seq, sizeof(cmd_seq));
     OLED_Wait_DMA();
     // 注意：这里不自动激活滚动，由用户手动调用 OLED_Scroll_HW_Switch(1)
+#endif
 }
 
 
@@ -720,6 +729,13 @@ void OLED_Scroll_HW_HV(uint8_t dir, uint8_t start_pg, uint8_t end_pg,
  *   啥阴啊，这个滚动搞了我一天，CSDN本来有文章说这个的，结果....VIP
  */
 void OLED_Scroll_HW_H(uint8_t dir, uint8_t start_pg, uint8_t end_pg, uint8_t speed){
+#if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
+    (void)dir;
+    (void)start_pg;
+    (void)end_pg;
+    (void)speed;
+    return;
+#else
     if (start_pg >= OLED_PAGES || end_pg >= OLED_PAGES) return;
     if (end_pg < start_pg) return;
     if (speed > 7) return;
@@ -736,6 +752,7 @@ void OLED_Scroll_HW_H(uint8_t dir, uint8_t start_pg, uint8_t end_pg, uint8_t spe
 
     (void)OLED_DMA_Send(CMD, cmd_seq, sizeof(cmd_seq));
     OLED_Wait_DMA();
+#endif
 }
 
 /**
@@ -744,9 +761,13 @@ void OLED_Scroll_HW_H(uint8_t dir, uint8_t start_pg, uint8_t end_pg, uint8_t spe
  */
 void OLED_Scroll_HW_Switch(uint8_t enable)
 {
+#if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
+    (void)enable;
+#else
     static uint8_t cmd;
     cmd = enable ? 0x2F : 0x2E;
     (void)OLED_DMA_Send(CMD, &cmd, 1U);
+#endif
 }
 
 // ==================== 屏幕旋转 ====================

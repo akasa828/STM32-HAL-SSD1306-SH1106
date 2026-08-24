@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -37,6 +38,18 @@ bool expect(bool condition, const char *message)
     return condition;
 }
 
+bool command_was_sent(const FakePort &port, uint8_t command)
+{
+    for (const Transfer &transfer : port.transfers) {
+        if (transfer.control == CMD &&
+            std::find(transfer.bytes.begin(), transfer.bytes.end(), command)
+                != transfer.bytes.end()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }
 
 int main()
@@ -47,6 +60,27 @@ int main()
     ops.write_dma = write_dma;
     ops.tick_ms = tick_ms;
     if (!expect(OLED_BindPort(&ops) == OLED_PORT_OK, "port binding")) return 1;
+
+    OLED_Init();
+    OLED_Wait_DMA();
+#if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
+    if (!expect(!command_was_sent(port, 0x2EU) &&
+                !command_was_sent(port, 0xA3U) &&
+                !command_was_sent(port, 0x20U),
+                "SH1106 initialization must omit SSD1306-only commands")) return 1;
+    port.transfers.clear();
+    OLED_Scroll_HW_H(0U, 0U, 0U, 0U);
+    OLED_Scroll_HW_HV(0U, 0U, 0U, 0U, 1U);
+    OLED_Scroll_HW_Switch(1U);
+    if (!expect(port.transfers.empty(),
+                "SH1106 must not receive SSD1306 hardware scroll commands")) return 1;
+#else
+    if (!expect(command_was_sent(port, 0x2EU) &&
+                command_was_sent(port, 0xA3U) &&
+                command_was_sent(port, 0x20U),
+                "SSD1306 initialization must configure scrolling and addressing")) return 1;
+#endif
+    port.transfers.clear();
 
     std::memset(OLED_GRAM, 0, sizeof(OLED_GRAM));
 #if OLED_USE_DOUBLE_BUFFER
