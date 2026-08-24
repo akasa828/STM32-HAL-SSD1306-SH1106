@@ -463,6 +463,61 @@ void test_rectangle_operations_match_half_open_clipping(TestContext &test)
     }
 }
 
+void apply_reference_rectangle(uint8_t frame[OLED_PAGES][OLED_WIDTH],
+                               int16_t x, int16_t y, int16_t width,
+                               int16_t height, bool invert)
+{
+    if (width == 0 || height == 0) return;
+    const int32_t x_end = static_cast<int32_t>(x) + width;
+    const int32_t y_end = static_cast<int32_t>(y) + height;
+    const int32_t left = std::max<int32_t>(0, std::min<int32_t>(x, x_end));
+    const int32_t right = std::min<int32_t>(OLED_WIDTH,
+                                           std::max<int32_t>(x, x_end));
+    const int32_t top = std::max<int32_t>(0, std::min<int32_t>(y, y_end));
+    const int32_t bottom = std::min<int32_t>(OLED_HEIGHT,
+                                            std::max<int32_t>(y, y_end));
+    for (int32_t row = top; row < bottom; ++row) {
+        for (int32_t column = left; column < right; ++column) {
+            const bool before = pixel_is_set(frame, column, row);
+            set_pixel(frame, column, row, invert ? !before : false);
+        }
+    }
+}
+
+void test_rectangle_property_cases(TestContext &test)
+{
+    constexpr int16_t origins[] = {-20, -16, -9, -1, 0, 1, 7, 15, 16, 17, 25};
+    constexpr int16_t spans[] = {-20, -16, -7, -1, 0, 1, 7, 16, 17, 25};
+    FakePort port;
+    for (int16_t x : origins) {
+        for (int16_t y : origins) {
+            for (int16_t width : spans) {
+                for (int16_t height : spans) {
+                    reset_driver(port);
+                    for (std::size_t page = 0; page < OLED_PAGES; ++page) {
+                        for (std::size_t column = 0; column < OLED_WIDTH; ++column) {
+                            const std::size_t index = page * OLED_WIDTH + column;
+                            OLED_GRAM[page][column] =
+                                static_cast<uint8_t>(index * 73U + 19U);
+                        }
+                    }
+                    uint8_t expected[OLED_PAGES][OLED_WIDTH];
+                    std::memcpy(expected, OLED_GRAM, sizeof(expected));
+                    apply_reference_rectangle(expected, x, y, width, height, true);
+                    OLED_SW_Invert_Rect(x, y, width, height);
+                    test.expect(std::memcmp(OLED_GRAM, expected, sizeof(expected)) == 0,
+                                "invert rectangle property case");
+
+                    apply_reference_rectangle(expected, x, y, width, height, false);
+                    OLED_Clear_Rect(x, y, width, height);
+                    test.expect(std::memcmp(OLED_GRAM, expected, sizeof(expected)) == 0,
+                                "clear rectangle property case");
+                }
+            }
+        }
+    }
+}
+
 void test_out_of_range_rectangle_does_not_overflow(TestContext &test)
 {
     FakePort port;
@@ -505,6 +560,7 @@ int main()
     test_soft_scroll_matches_pixel_rotation(test);
     test_infinite_lines_are_clipped_from_offscreen_origins(test);
     test_rectangle_operations_match_half_open_clipping(test);
+    test_rectangle_property_cases(test);
     test_out_of_range_rectangle_does_not_overflow(test);
     test_wave_coordinates_do_not_wrap(test);
 
