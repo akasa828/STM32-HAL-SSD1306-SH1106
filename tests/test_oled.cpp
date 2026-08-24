@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -10,8 +11,8 @@
 namespace {
 
 struct Transfer {
-    uint8_t address;
-    uint8_t control;
+    uint8_t address = 0;
+    uint8_t control = 0;
     std::vector<uint8_t> bytes;
 };
 
@@ -21,6 +22,7 @@ struct FakePort {
     bool complete_immediately = true;
     uint32_t aborts = 0;
     uint32_t recoveries = 0;
+    uint32_t successes = 0;
     uint32_t failures = 0;
     uint32_t timeout_failures = 0;
     std::vector<Transfer> transfers;
@@ -67,6 +69,11 @@ void fake_failure(void *context, uint8_t timeout_failure)
     port.timeout_failures += timeout_failure != 0U;
 }
 
+void fake_success(void *context)
+{
+    ++static_cast<FakePort *>(context)->successes;
+}
+
 OLED_PortOps make_ops(FakePort &port)
 {
     OLED_PortOps ops{};
@@ -76,6 +83,7 @@ OLED_PortOps make_ops(FakePort &port)
     ops.recover = fake_recover;
     ops.tick_ms = fake_tick;
     ops.idle = fake_idle;
+    ops.on_success = fake_success;
     ops.on_failure = fake_failure;
     return ops;
 }
@@ -85,7 +93,8 @@ void reset_driver(FakePort &port)
     port = FakePort{};
     OLED_PortOps ops = make_ops(port);
     if (OLED_BindPort(&ops) != OLED_PORT_OK) {
-        throw std::runtime_error("OLED_BindPort failed");
+        std::cerr << "OLED_BindPort failed\n";
+        std::exit(EXIT_FAILURE);
     }
     std::memset(OLED_GRAM, 0, sizeof(OLED_GRAM));
     std::memset(OLED_BACK_BUFFER, 0, sizeof(OLED_BACK_BUFFER));
@@ -244,6 +253,48 @@ void test_timeout_wait_recovers(TestContext &test)
                 "DMA wait timeout must be reported as a timeout failure");
     test.expect(port.aborts == 1 && port.recoveries == 1,
                 "DMA wait timeout must abort and recover the transport");
+}
+
+void test_notifications_require_an_active_transfer(TestContext &test)
+{
+    FakePort port;
+    reset_driver(port);
+    const uint32_t errors_before = OLED_Get_I2C_Error_Count();
+
+    OLED_NotifyTxComplete();
+    OLED_NotifyError();
+
+    test.expect(port.successes == 0U,
+                "an idle completion notification must be ignored");
+    test.expect(port.failures == 0U &&
+                OLED_Get_I2C_Error_Count() == errors_before,
+                "an idle error notification must be ignored");
+
+    port.complete_immediately = false;
+    OLED_Write_Byte(0xAE, CMD);
+    OLED_NotifyTxComplete();
+    OLED_NotifyTxComplete();
+    test.expect(port.successes == 1U,
+                "duplicate completion notifications must be ignored");
+}
+
+void test_rebinding_during_transfer_is_rejected(TestContext &test)
+{
+    FakePort active_port;
+    reset_driver(active_port);
+    active_port.complete_immediately = false;
+    OLED_Write_Byte(0xAE, CMD);
+
+    FakePort replacement;
+    OLED_PortOps replacement_ops = make_ops(replacement);
+    test.expect(OLED_BindPort(&replacement_ops) == OLED_PORT_BUSY,
+                "port rebinding must not discard an active DMA transfer");
+
+    OLED_NotifyTxComplete();
+    test.expect(active_port.successes == 1U,
+                "the active port must receive its completion notification");
+    test.expect(OLED_BindPort(&replacement_ops) == OLED_PORT_OK,
+                "port rebinding must succeed after the transfer completes");
 }
 
 void test_null_text_arguments_are_ignored(TestContext &test)
@@ -435,6 +486,8 @@ int main()
     test_offscreen_progress_bar_does_not_wrap(test);
     test_immediate_timeout_is_counted(test);
     test_timeout_wait_recovers(test);
+    test_notifications_require_an_active_transfer(test);
+    test_rebinding_during_transfer_is_rejected(test);
     test_null_text_arguments_are_ignored(test);
     test_minimum_signed_number(test);
     test_bitmap_clipping_and_alignment(test);

@@ -158,6 +158,7 @@ int OLED_BindPort(const OLED_PortOps *ops)
 {
     if (ops == NULL || ops->write_dma == NULL || ops->tick_ms == NULL)
         return OLED_PORT_NOT_BOUND;
+    if (OLED_DMA_Busy != 0U) return OLED_PORT_BUSY;
     s_port = *ops;
     OLED_DMA_Busy = 0U;
     s_i2c_recover_pending = 0U;
@@ -168,12 +169,14 @@ int OLED_BindPort(const OLED_PortOps *ops)
 
 void OLED_NotifyTxComplete(void)
 {
+    if (OLED_DMA_Busy == 0U) return;
     OLED_DMA_Busy = 0U;
     if (s_port.on_success != NULL) s_port.on_success(s_port.context);
 }
 
 void OLED_NotifyError(void)
 {
+    if (OLED_DMA_Busy == 0U) return;
     OLED_DMA_Busy = 0U;
     s_port_errors++;
     if (s_port.on_failure != NULL) s_port.on_failure(s_port.context, 0U);

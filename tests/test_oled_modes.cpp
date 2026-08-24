@@ -9,7 +9,7 @@
 namespace {
 
 struct Transfer {
-    uint8_t control;
+    uint8_t control = 0;
     std::vector<uint8_t> bytes;
 };
 
