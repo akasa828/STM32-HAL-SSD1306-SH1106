@@ -9,6 +9,7 @@ also includes a complete STM32F103C8T6 example that can be built and flashed
 from VS Code with `F5`.
 
 ![Version](https://img.shields.io/badge/version-v1.0.0-blue)
+[![CI](https://github.com/akasa828/STM32-HAL-SSD1306-SH1106/actions/workflows/ci.yml/badge.svg)](https://github.com/akasa828/STM32-HAL-SSD1306-SH1106/actions/workflows/ci.yml)
 ![STM32 HAL](https://img.shields.io/badge/STM32-HAL-03234B)
 ![OLED](https://img.shields.io/badge/OLED-SSD1306%20%7C%20SH1106-222222)
 ![License](https://img.shields.io/badge/license-MIT-green)
