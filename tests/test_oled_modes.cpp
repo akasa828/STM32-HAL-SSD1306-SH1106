@@ -50,6 +50,16 @@ bool command_was_sent(const FakePort &port, uint8_t command)
     return false;
 }
 
+std::vector<uint8_t> command_stream(const FakePort &port)
+{
+    std::vector<uint8_t> commands;
+    for (const Transfer &transfer : port.transfers) {
+        if (transfer.control == CMD)
+            commands.insert(commands.end(), transfer.bytes.begin(), transfer.bytes.end());
+    }
+    return commands;
+}
+
 }
 
 int main()
@@ -64,6 +74,14 @@ int main()
     OLED_Init();
     OLED_Wait_DMA();
 #if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
+    const std::vector<uint8_t> expected_initialization{
+        0xAEU, 0xD5U, 0xF0U, 0xA8U, 0x0FU, 0xD3U, 0x00U, 0x40U,
+        0xA1U, 0xC8U, 0xDAU, 0x02U, 0xDBU, 0x40U, 0xD9U, 0xF1U,
+        0x81U, 0xCFU, 0xA4U, 0xA6U, 0xADU, 0x8BU,
+        0xB0U, 0x02U, 0x10U, 0xB1U, 0x02U, 0x10U, 0xAFU,
+    };
+    if (!expect(command_stream(port) == expected_initialization,
+                "SH1106 initialization command sequence")) return 1;
     if (!expect(!command_was_sent(port, 0x2EU) &&
                 !command_was_sent(port, 0xA3U) &&
                 !command_was_sent(port, 0x20U),
@@ -75,6 +93,15 @@ int main()
     if (!expect(port.transfers.empty(),
                 "SH1106 must not receive SSD1306 hardware scroll commands")) return 1;
 #else
+    const std::vector<uint8_t> expected_initialization{
+        0xAEU, 0x2EU, 0xA3U, 0x00U, 0x10U, 0xD5U, 0xF0U, 0xA8U,
+        0x0FU, 0xD3U, 0x00U, 0x40U, 0x20U, 0x00U, 0x21U, 0x00U,
+        0x0CU, 0x22U, 0x00U, 0x01U, 0xA1U, 0xC8U, 0xDAU, 0x02U,
+        0xDBU, 0x40U, 0xD9U, 0xF1U, 0x81U, 0xCFU, 0xA4U, 0xA6U,
+        0x8DU, 0x14U, 0xAFU,
+    };
+    if (!expect(command_stream(port) == expected_initialization,
+                "SSD1306 initialization command sequence")) return 1;
     if (!expect(command_was_sent(port, 0x2EU) &&
                 command_was_sent(port, 0xA3U) &&
                 command_was_sent(port, 0x20U),

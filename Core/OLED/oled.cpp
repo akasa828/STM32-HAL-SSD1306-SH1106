@@ -271,99 +271,79 @@ void OLED_Write_Byte(uint8_t cmd, uint8_t mode){
     OLED_DMA_Send(mode, &dma_buf, 1);
 }
 
-//===============初始化环节===============
+static void OLED_Send_Command_Sequence(const uint8_t *commands, uint16_t count)
+{
+    for (uint16_t i = 0U; i < count; ++i) OLED_Write_Byte(commands[i], CMD);
+}
 
-/**
- * @brief  OLED 屏幕初始化 (工业级防错版)
- * 配置为：OLED_WIDTH x OLED_HEIGHT 分辨率 + 水平寻址模式
- */
-void OLED_Init(){
-    // 1. 关闭显示（防止初始化配置期间屏幕出现乱码、花屏或闪烁）
-    OLED_Write_Byte(0xAE,CMD); // 0xAE: 进入休眠模式 (Display OFF)
-
+static void OLED_Reset_Controller_State(void)
+{
+    OLED_Write_Byte(0xAEU, CMD);
 #if OLED_CONTROLLER == OLED_CONTROLLER_SSD1306
-    // ==================【硬件滚动初始化】==================
-    // 1.1 强制关闭所有硬件滚动
-    // 避坑：如果是单片机软复位（没断电），OLED 的滚动引擎可能还在后台跑，
-    // 此时往 RAM 里写数据会发生严重冲突，导致屏幕永久花屏或错位。
-    OLED_Write_Byte(0x2E,CMD); // 0x2E: Deactivate scroll
-
-    // 1.2 复位垂直滚动区域 (恢复为全屏 0~64)
-    // 避坑：防止上一次程序运行残留的 0xA3 指令导致屏幕显示区域被诡异截断。
-    OLED_Write_Byte(0xA3,CMD); // Set Vertical Scroll Area
-    OLED_Write_Byte(0x00,CMD); // 顶部固定区域行数 = 0
-    OLED_Write_Byte(OLED_HEIGHT, CMD); // 滚动区域行数 = 64 (全屏)
-    // ==============================================================
+    const uint8_t scroll_reset[] = {0x2EU, 0xA3U, 0x00U, OLED_HEIGHT};
+    OLED_Send_Command_Sequence(scroll_reset, sizeof(scroll_reset));
 #endif
+}
 
-    // 2. 优化时钟（调高芯片内部振荡器频率，使屏幕硬件层面的刷新极限拉到最高）
-    OLED_Write_Byte(0xD5,CMD); // 0xD5: 设置显示时钟分频比与振荡器频率 (Set Display Clock Divide Ratio)
-    OLED_Write_Byte(0xF0,CMD); // 0xF0: 高4位0xF将内部振荡器频推到最高，低4位0x0设分频比为1
+static void OLED_Configure_Timing(void)
+{
+    const uint8_t commands[] = {
+        0xD5U, 0xF0U,
+        0xA8U, (uint8_t)(OLED_HEIGHT - 1U),
+        0xD3U, 0x00U,
+        0x40U,
+    };
+    OLED_Send_Command_Sequence(commands, sizeof(commands));
+}
 
-    // 3. 设置驱动复用率（必须与屏幕实际物理行数精准匹配）
-    OLED_Write_Byte(0xA8,CMD); // 0xA8: 设置多路复用率 (Set Multiplex Ratio)
-    OLED_Write_Byte(OLED_HEIGHT - 1, CMD); // 复用率 = 行数 - 1
-
-    // 4. 设置显示偏移与显示起点
-    OLED_Write_Byte(0xD3,CMD); // 0xD3: 设置显示垂直偏移量 (Set Display Offset)
-    OLED_Write_Byte(0x00,CMD); // 0x00: 偏移量设为0 (RAM的Row 0完美对应屏幕顶部的第一物理行)
-    OLED_Write_Byte(0x40,CMD); // 0x40: 设置显示RAM的起始行地址为0 (Set Display Start Line)
-
-    // 5. 配置为水平寻址模式
+static void OLED_Configure_Addressing(void)
+{
 #if OLED_CONTROLLER == OLED_CONTROLLER_SSD1306
-    OLED_Write_Byte(0x20,CMD); // 0x20: 设置内存寻址模式 (Set Memory Addressing Mode)
-    OLED_Write_Byte(0x00,CMD); // SSD1306 horizontal addressing
+    const uint8_t commands[] = {
+        0x20U, 0x00U,
+        0x21U, OLED_COLUMN_OFFSET,
+        (uint8_t)(OLED_COLUMN_OFFSET + OLED_WIDTH - 1U),
+        0x22U, 0x00U, (uint8_t)(OLED_PAGES - 1U),
+    };
+    OLED_Send_Command_Sequence(commands, sizeof(commands));
 #endif
+}
 
-    // 6. 限定寻址边界（将水平寻址的自动弹回窗口锁定在全屏范围内）
-#if OLED_CONTROLLER == OLED_CONTROLLER_SSD1306
-    OLED_Write_Byte(0x21,CMD);
-    OLED_Write_Byte(OLED_COLUMN_OFFSET,CMD);
-    OLED_Write_Byte(OLED_COLUMN_OFFSET + OLED_WIDTH - 1, CMD);
-    OLED_Write_Byte(0x22,CMD);
-    OLED_Write_Byte(0x00,CMD);
-    OLED_Write_Byte(OLED_PAGES - 1, CMD);
-#endif
-
-    // 7. 翻转显示方向（默认 180° 镜像）
+static void OLED_Configure_Panel(void)
+{
     OLED_Set_Mirror(OLED_DEFAULT_H_FLIP, OLED_DEFAULT_V_FLIP);
+    const uint8_t commands[] = {
+        0xDAU, (OLED_HEIGHT > 32U) ? 0x12U : 0x02U,
+        0xDBU, 0x40U,
+        0xD9U, 0xF1U,
+        0x81U, 0xCFU,
+        0xA4U, 0xA6U,
+    };
+    OLED_Send_Command_Sequence(commands, sizeof(commands));
+}
 
-    // 8. COM硬件引脚及电气电平配置
-    OLED_Write_Byte(0xDA,CMD); // 0xDA: 设置COM引脚硬件配置 (Set COM Pins Hardware Configuration)
-    OLED_Write_Byte((OLED_HEIGHT > 32U) ? 0x12U : 0x02U, CMD);
-    OLED_Write_Byte(0xDB,CMD); // 0xDB: 设置VCOMH取消选择电平 (Set VCOMH Deselect Level)
-    OLED_Write_Byte(0x40,CMD); // 0x40: 对应约0.77*Vcc，使非选中行的截止更彻底，极大增强黑底纯净度
-
-    // 9. 电气与发光性能调节（放电与对比度参数）
-    OLED_Write_Byte(0xD9,CMD); // 0xD9: 设置预充电周期时长 (Set Pre-charge Period)
-    OLED_Write_Byte(0xF1,CMD); // 0xF1: 确保极高刷新率下像素不拖影
-    OLED_Write_Byte(0x81,CMD); // 0x81: 对比度控制 (Set Contrast Control)
-    OLED_Write_Byte(0xCF,CMD); // 0xCF: 对比度数值设为0xCF (增大发光电流，使得图像明亮清晰)
-
-    // 10. 全屏输出模式与正显配置
-    OLED_Write_Byte(0xA4,CMD); // 0xA4: 输出遵循RAM内容 (Entire Display ON)
-    OLED_Write_Byte(0xA6,CMD); // 0xA6: 设置正常显示模式 (Set Normal Display)
-
-    // 11. 启动内置升压电荷泵（3.3V供电下必须开启此项屏幕才会亮）
+static void OLED_Enable_Panel_Power(void)
+{
 #if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
-    OLED_Write_Byte(0xAD,CMD); // SH1106 DC-DC control
-    OLED_Write_Byte(0x8B,CMD); // DC-DC ON
+    const uint8_t commands[] = {0xADU, 0x8BU};
 #else
-    OLED_Write_Byte(0x8D,CMD); // SSD1306 charge pump setting
-    OLED_Write_Byte(0x14,CMD); // charge pump ON
+    const uint8_t commands[] = {0x8DU, 0x14U};
 #endif
+    OLED_Send_Command_Sequence(commands, sizeof(commands));
+}
 
-    // ==================【防雪花屏体验】==================
-    // 在开机前，强制把单片机的空数组推送到 OLED 的显存里。
-    // 避坑：OLED 刚通电时，硬件显存里全是随机噪点（雪花）。
-    // 必须在 0xAF 开机指令前把它洗干净，否则开机瞬间屏幕会闪烁一下垃圾画面。
+void OLED_Init(void)
+{
+    OLED_Reset_Controller_State();
+    OLED_Configure_Timing();
+    OLED_Configure_Addressing();
+    OLED_Configure_Panel();
+    OLED_Enable_Panel_Power();
+
     OLED_GRAM_Clear();
     OLED_GRAM_Refresh();
-    OLED_Wait_DMA(); // 必须阻塞等待这帧黑屏数据传完
-    // ==============================================================
-
-    // 12. 正式开机
-    OLED_Write_Byte(0xAF,CMD); // 0xAF: 开启OLED面板显示 (Display ON)
+    OLED_Wait_DMA();
+    OLED_Write_Byte(0xAFU, CMD);
     OLED_Wait_DMA();
 }
 //===============函数实现区域===============
