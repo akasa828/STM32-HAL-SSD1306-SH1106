@@ -14,7 +14,7 @@ target_compile_definitions(oled_tests PRIVATE
     OLED_WIDTH=16
     OLED_HEIGHT=16
     OLED_COLUMN_OFFSET=2
-    OLED_ENABLE_WAVE=0
+    OLED_ENABLE_WAVE=1
     OLED_USE_DOUBLE_BUFFER=1
 )
 

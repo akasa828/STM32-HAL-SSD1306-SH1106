@@ -1252,7 +1252,7 @@ void OLED_Draw_Wave(int16_t x0, int16_t y0, uint8_t A, uint8_t wave,
         int16_t y_math = (int16_t)(((int32_t)sv * A) >> 15);
 
         // 屏幕坐标：y_screen = y0 - (y_math + b)
-        int16_t sy = y0 - y_math - b;
+        const int32_t sy = (int32_t)y0 - (int32_t)y_math - (int32_t)b;
 
         if (sy >= 0 && sy < OLED_HEIGHT)
             OLED_Draw_Point((uint8_t)sx, (uint8_t)sy);

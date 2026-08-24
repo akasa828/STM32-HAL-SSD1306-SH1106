@@ -475,6 +475,17 @@ void test_out_of_range_rectangle_does_not_overflow(TestContext &test)
                 "out-of-range rectangle endpoints must not overflow or draw");
 }
 
+void test_wave_coordinates_do_not_wrap(TestContext &test)
+{
+    FakePort port;
+    reset_driver(port);
+
+    OLED_Draw_Wave(0, INT16_MIN, 255U, 0U, 64U, 0U, INT16_MAX);
+
+    test.expect(all_bytes_equal(&OLED_GRAM[0][0], OLED_GRAM_SIZE, 0),
+                "offscreen wave coordinates must not wrap onto the display");
+}
+
 }
 
 int main()
@@ -495,6 +506,7 @@ int main()
     test_infinite_lines_are_clipped_from_offscreen_origins(test);
     test_rectangle_operations_match_half_open_clipping(test);
     test_out_of_range_rectangle_does_not_overflow(test);
+    test_wave_coordinates_do_not_wrap(test);
 
     if (test.failures != 0) {
         std::cerr << test.failures << " test assertion(s) failed\n";
