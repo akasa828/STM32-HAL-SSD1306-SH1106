@@ -4,10 +4,14 @@
 
 1. Copy `Core/OLED/` and add `oled.cpp` to the build.
 2. Implement `OLED_PortOps`, or copy the STM32 HAL adapter from `Core/Port/`.
-3. Configure the physical size, controller, column offset, and mirror macros.
+3. Configure the physical size, controller, 7-bit I2C address, column offset, and mirror macros.
 4. Bind the port before `OLED_Init()` and forward transfer-complete/error events.
 5. Verify full and partial refresh, then test recovery by forcing a bus error.
 
 The core does not include `main.h`, `i2c.h`, a global I2C handle, or an MCU-specific
 reinitialization function. RAM use is one frame buffer, or two when double buffering
 is enabled: `OLED_WIDTH × ceil(OLED_HEIGHT / 8)` bytes per buffer.
+
+The STM32 HAL adapter requires 7-bit I2C addressing and rejects a 10-bit handle.
+Set `OLED_I2C_ADDRESS_7BIT` to the address printed in module documentation (`0x3C`
+or `0x3D` on common boards); the driver performs the STM32 HAL left shift.

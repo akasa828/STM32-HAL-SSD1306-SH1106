@@ -9,7 +9,7 @@
 - 屏幕尺寸完全由 `OLED_WIDTH`、`OLED_HEIGHT` 推导，高度须为 8 的倍数。
 - 支持 SSD1306/SH1106、列偏移、镜像与 0°/90°/180°/270° 旋转。
 - 支持点、线、矩形、圆、位图、ASCII 文字、数字、进度条和可选波形绘制。
-- 支持单双缓冲、全屏/局部刷新，以及软硬件滚动。
+- 支持单双缓冲、全屏/局部刷新、SSD1306 硬件滚动和通用软件滚动。
 - 使用 `OLED_PortOps` 隔离 DMA、恢复、计时和诊断逻辑，核心不占用固定 I2C 句柄或 HAL 全局回调。
 
 ## 快速开始
@@ -40,7 +40,11 @@
 #define OLED_WIDTH 128
 #define OLED_HEIGHT 64
 #define OLED_CONTROLLER OLED_CONTROLLER_SSD1306
+#define OLED_I2C_ADDRESS_7BIT 0x3C
 ```
+
+显存宏可以验证不同尺寸的代码路径，但实际可用列数和行数仍受控制器与屏幕模组限制。
+SH1106 的硬件滚动接口会保持无操作，避免误发 SSD1306 专用命令。
 
 ## 实际项目
 

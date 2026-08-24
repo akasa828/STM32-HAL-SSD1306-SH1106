@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.0.2 - 2026-08-25
+
+- Keep SH1106 initialization and scroll APIs free of SSD1306-only commands.
+- Count DMA wait timeouts consistently and ignore idle or duplicate transfer
+  notifications.
+- Reject port rebinding during an active DMA transfer and reject STM32 HAL
+  handles configured for 10-bit I2C addressing.
+- Make the 7-bit display address configurable for `0x3C`, `0x3D`, and other modules.
+- Prevent extreme wave coordinates from wrapping back into the visible frame.
+- Split controller initialization into focused reset, timing, addressing, panel,
+  and power stages while locking the exact command sequence in tests.
+- Add exhaustive rectangle clipping checks and GitHub Actions for host tests,
+  static analysis, and ten STM32F103 build configurations.
+
 ## v1.0.1 - 2026-08-23
 
 - Linked the original OVID player as a complete usage example.

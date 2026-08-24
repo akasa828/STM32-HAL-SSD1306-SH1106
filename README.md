@@ -8,7 +8,7 @@ configuration. The driver core is independent of STM32 HAL; this repository
 also includes a complete STM32F103C8T6 example that can be built and flashed
 from VS Code with `F5`.
 
-![Version](https://img.shields.io/badge/version-v1.0.0-blue)
+![Version](https://img.shields.io/badge/version-v1.0.2-blue)
 [![CI](https://github.com/akasa828/STM32-HAL-SSD1306-SH1106/actions/workflows/ci.yml/badge.svg)](https://github.com/akasa828/STM32-HAL-SSD1306-SH1106/actions/workflows/ci.yml)
 ![STM32 HAL](https://img.shields.io/badge/STM32-HAL-03234B)
 ![OLED](https://img.shields.io/badge/OLED-SSD1306%20%7C%20SH1106-222222)
@@ -19,7 +19,7 @@ from VS Code with `F5`.
 - Resolution is derived from `OLED_WIDTH` and `OLED_HEIGHT`; height must be a multiple of 8.
 - SSD1306 and SH1106 controller selection, column offset, mirror, and rotation support.
 - Points, lines, rectangles, circles, bitmaps, ASCII text, numbers, progress bars, and optional wave drawing.
-- Single or double buffering, full refresh, partial refresh, and hardware/software scrolling.
+- Single or double buffering, full/partial refresh, SSD1306 hardware scrolling, and software scrolling.
 - `OLED_PortOps` decouples DMA transfer, recovery, timekeeping, and diagnostics from the display core.
 - A ready-to-flash STM32F103 example using I2C1 on PB6/PB7.
 
@@ -78,14 +78,19 @@ See [API](docs/API.md) and [Porting](docs/PORTING.md) for the complete contract.
 #define OLED_WIDTH 128
 #define OLED_HEIGHT 64
 #define OLED_CONTROLLER OLED_CONTROLLER_SSD1306
+#define OLED_I2C_ADDRESS_7BIT 0x3C
 ```
 
 The same values can be overridden by CMake, for example:
 
 ```powershell
-cmake --preset Debug -DOLED_WIDTH_OVERRIDE=128 -DOLED_HEIGHT_OVERRIDE=32
+cmake --preset Debug -DOLED_WIDTH_OVERRIDE=128 -DOLED_HEIGHT_OVERRIDE=32 -DOLED_I2C_ADDRESS_OVERRIDE=0x3D
 cmake --build --preset Debug
 ```
+
+The framebuffer macros are generic, but the selected controller and physical
+module still determine the usable columns and rows. SH1106 hardware-scroll calls
+are intentionally no-ops because their command format is not SSD1306-compatible.
 
 The default I2C clock is the original project's tested configuration. Reduce it
 when a module, cable length, or pull-up network is unstable.
